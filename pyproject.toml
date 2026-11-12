@@ -1,0 +1,18 @@
+[project]
+name = "gb-demand-forecast"
+version = "0.1.0"
+description = "Day-ahead probabilistic forecasts of GB electricity demand, scored against NESO's published forecast"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pandas>=2.2,<3",
+    "numpy>=1.26,<2.4",
+    "requests>=2.31",
+    "pyarrow>=15",
+    "matplotlib>=3.8.1",
+    "holidays>=0.54",
+    "lightgbm>=4.5",
+    "jupyter>=1.0",
+    "nbformat>=5.9",
+]

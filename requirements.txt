@@ -1,8 +1,0 @@
-pandas>=2.2
-numpy
-requests
-pyarrow
-matplotlib>=3.8.1
-jupyter
-holidays
-lightgbm
