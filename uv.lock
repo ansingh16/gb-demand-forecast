@@ -1005,6 +1005,7 @@ name = "gb-demand-forecast"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "fastapi" },
     { name = "holidays" },
     { name = "lightgbm" },
     { name = "numpy" },
@@ -1013,10 +1014,13 @@ dependencies = [
     { name = "pyyaml" },
     { name = "requests" },
     { name = "scikit-learn" },
+    { name = "tabulate" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "httpx" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -1034,6 +1038,7 @@ tracking = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "holidays", specifier = ">=0.54" },
     { name = "lightgbm", specifier = ">=4.5" },
     { name = "numpy", specifier = ">=1.26,<2.4" },
@@ -1042,10 +1047,13 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.31" },
     { name = "scikit-learn", specifier = ">=1.5" },
+    { name = "tabulate", specifier = ">=0.9" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "httpx", specifier = ">=0.27" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.6" },
 ]
