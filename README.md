@@ -38,7 +38,7 @@ The ten most important issues found while building the forecast. The notebook nu
 | 6 | Trees cannot predict outside their training range, and demand has fallen about 4 GW since 2018 | the direct model scored worse than expected (06) | predict demand minus the latest 24 hours of live demand | validation MAE 851 to 786 MW |
 | 7 | Quantile models were overconfident: the 90% interval held the outcome only 74% of the time, and 71% of rows had quantiles out of order | coverage and crossing checks on validation (07) | compared conformal calibration with the point forecast plus recent out-of-sample errors, chose by interval score on validation | 88.5% coverage for the 90% interval on the test window |
 | 8 | Calibrating on actual-weather errors would understate the errors with forecast weather | followed from notebook 04's results (08) | calibrate each test month only on forecast-weather errors known before it | coverage held on unseen data |
-| 9 | Open-Meteo radiation is the mean over the hour **before** the timestamp, while temperature is the value at it | read the variable definitions (04) | each half-hour takes radiation from the hour that contains it | sunlight lands in the right half-hours |
+| 9 | A first drift check flagged almost every input in every month | ran it over the 30 test months (09) | compare each month with the same calendar month in past years; report but do not alert on inputs that follow known trends (demand level, solar capacity); rerun the weather check on ERA5 to separate the forecast feed from real weather | temperature flags fell from 30 months to 12, and 90 of 109 drift flags were trends; half the temperature drift turned out to be the forecast feed differing from the ERA5 training data |
 | 10 | Code copied out of notebooks can quietly differ from what was tested, and a cut-off rule is easy to break later | ported everything to a package, rebuilt every table and reran the test window through it (Day 9) | compared each table and forecast with the notebook versions; added a test that changes every demand value published after the forecast time and checks that no feature moves | identical tables and test forecasts (largest difference 0 MW over 42,818 half-hours); the leak test runs in CI on every push |
 
 ### Still open
@@ -48,6 +48,34 @@ The ten most important issues found while building the forecast. The notebook nu
   adjustment learnt from all years.
 - **Weather inputs** come from ten equal-weight points and one model; NESO uses more. Ideas:
   locations weighted by installed solar, and more than one weather model.
+
+## Live forecasts
+
+The `train` stage fits the models on everything known and saves them with the interval table.
+The service then builds the next day's features from live data: Elexon demand up to 08:00 UTC
+on the day before (the same cut-off as in testing) and the latest Open-Meteo weather forecast.
+
+```
+uv run dvc repro                     # or: uv run python -m gb_demand.pipeline train
+docker build -t gb-demand .
+docker run -p 8000:8000 gb-demand
+curl "localhost:8000/forecast?date=2026-11-17"
+```
+
+A day can be forecast from 08:30 UTC on the day before until it ends; other dates get HTTP 409.
+Example, made at 14:47 UTC on 16 November 2026 for the next day: evening peak 41,118 MW at 17:30,
+90% interval 39,806 to 43,141 MW. The image was built and run with Docker Desktop.
+
+## Monitoring
+
+`python -m gb_demand.monitor` writes [`reports/monitoring.md`](reports/monitoring.md):
+population stability index (PSI) of each input against the same calendar month in 2019 to 2023,
+monthly MAE against NESO, and 90% interval coverage. Over the test window:
+
+- The intervals are right on average (88.5%) but slow to react: monthly coverage ranged from 78%
+  to 97%, and fell in exactly the months where errors jumped (correlation −0.89).
+- Half of the temperature drift came from the forecast feed differing from the ERA5 data the
+  model was trained on, not from unusual weather.
 
 ## Data
 
@@ -67,9 +95,11 @@ Data files are not stored in this repo; the notebooks download them.
 | `src/gb_demand/sources.py`, `prepare.py` | downloads from NESO, Elexon and Open-Meteo, and cleaning |
 | `src/gb_demand/features.py`, `model.py`, `calibration.py` | features, LightGBM point and quantile models, calibrated intervals |
 | `src/gb_demand/pipeline.py` | the stages below; the backtest is logged to MLflow |
+| `src/gb_demand/live.py`, `api.py`, `Dockerfile` | live forecast from today's Elexon and Open-Meteo data, served with FastAPI |
+| `src/gb_demand/monitor.py`, `reports/monitoring.md` | input drift, accuracy and interval coverage by month (notebook 09) |
 | `dvc.yaml`, `params.yaml` | stages `download → prepare → features → backtest → train` and their settings |
 | `reports/metrics.json` | test-window scores from the latest backtest |
-| `tests/` | period handling, cut-off rules (including a leak test), weather alignment, intervals |
+| `tests/` | period handling, cut-off rules (including a leak test), weather alignment, intervals, the API, monitoring |
 
 ## Running
 
