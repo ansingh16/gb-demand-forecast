@@ -4,11 +4,28 @@ Half-hourly probabilistic forecasts of Great Britain's national electricity dema
 compared with the day-ahead forecast published by the National Energy System Operator
 (NESO).
 
-Work in progress. The notebooks in `notebooks/` are numbered in working order, and each
-step explains what is being done and why. The code they settled on lives in `src/gb_demand/`,
-with tests, and runs as a DVC pipeline.
+The forecast for each day is made at 08:30 UTC the day before, using only data public at that
+moment, and comes with 50%, 80% and 90% intervals. It was tested once, on June 2024 to November
+2026, data it had never seen. NESO's forecast is more accurate; this one's intervals hold their
+stated coverage. The notebooks in `notebooks/` show the work step by step, with notes on what
+was done and why; the code they settled on lives in `src/gb_demand/`, with tests, a DVC
+pipeline, a FastAPI service and monitoring.
 
-## Results so far
+## Approach
+
+- **Target:** National Demand (`ND`), half-hourly, in MW. Settlement periods are turned into UTC
+  from local midnight, so 46 and 50 period days need no special case.
+- **What is known at 08:30 UTC the day before:** live demand from Elexon up to 08:00 UTC, the
+  calendar, NESO's solar capacity with a four-week delay, and weather forecasts made 48 hours
+  before each hour (Open-Meteo archive).
+- **Model:** LightGBM with 17 features, predicting demand minus the latest 24 hours of live
+  demand, so a falling level does not push the trees outside their training range.
+- **Intervals:** the point forecast plus quantiles of its recent errors for each half-hour of the
+  day, chosen over quantile regression and conformalized quantile regression on validation data.
+- **Validation and test:** 24 rolling monthly folds (June 2022 to May 2024) for every choice;
+  then one run on June 2024 to November 2026, refitted monthly, with forecast weather.
+
+## Results
 
 Final test: 1 June 2024 to 9 November 2026, 42,818 half-hours, forecasts made at 08:30 UTC
 the day before using day-ahead weather forecasts (notebook 08).
@@ -17,12 +34,16 @@ the day before using day-ahead weather forecasts (notebook 08).
 |---|---|---|
 | MAE | 689 MW | 880 MW |
 | MAPE | 2.8% | 3.6% |
+| Months with the lower MAE | 30 of 30 | 0 of 30 |
 | TRIAD periods (MAE) | 806 MW | 799 MW |
 | Bank holidays (MAE) | 695 MW | 1,439 MW |
 | 90% interval coverage | no interval published | 88.5% |
 
-NESO's point forecast is clearly more accurate. This model's intervals are well calibrated
-on unseen data (50%, 80% and 90% intervals cover 49%, 79% and 88.5% of outcomes).
+NESO's point forecast is clearly more accurate (this model's MAE is 28% higher), as expected: NESO has live
+metering, its own solar and wind estimates and several weather providers. This model's intervals
+are well calibrated on unseen data (50%, 80% and 90% intervals cover 49%, 79% and 88.5% of
+outcomes), which NESO's published forecast does not offer. The gap to NESO on the test (191 MW)
+matched the validation estimate (174 MW), so the validation setup did not flatter the model.
 
 ## Problems caught and how they were fixed
 
@@ -41,13 +62,37 @@ The ten most important issues found while building the forecast. The notebook nu
 | 9 | A first drift check flagged almost every input in every month | ran it over the 30 test months (09) | compare each month with the same calendar month in past years; report but do not alert on inputs that follow known trends (demand level, solar capacity); rerun the weather check on ERA5 to separate the forecast feed from real weather | temperature flags fell from 30 months to 12, and 90 of 109 drift flags were trends; half the temperature drift turned out to be the forecast feed differing from the ERA5 training data |
 | 10 | Code copied out of notebooks can quietly differ from what was tested, and a cut-off rule is easy to break later | ported everything to a package, rebuilt every table and reran the test window through it (Day 9) | compared each table and forecast with the notebook versions; added a test that changes every demand value published after the forecast time and checks that no feature moves | identical tables and test forecasts (largest difference 0 MW over 42,818 half-hours); the leak test runs in CI on every push |
 
-### Still open
+## Limits
 
 - **Bank holidays and Christmas** are the largest weakness (1,439 MW MAE on bank holidays,
-  against NESO's 695 MW). Ideas: features for the days around each holiday, and a holiday
-  adjustment learnt from all years.
-- **Weather inputs** come from ten equal-weight points and one model; NESO uses more. Ideas:
-  locations weighted by installed solar, and more than one weather model.
+  against NESO's 695 MW); most of the worst days are holidays. Ideas: features for the days
+  around each holiday, and a holiday adjustment learnt from all years.
+- **Weather inputs** come from ten equal-weight points and one weather model, and the forecasts
+  are 48 hours old, older than NESO could use. Ideas: locations weighted by installed solar, more
+  than one weather model.
+- **Trained on ERA5, fed forecasts:** archived forecasts only start in 2024, so the model learns
+  from reanalysis. Forecast weather costs it 6% in MAE, and monitoring found the two differ in
+  distribution. Training on archived forecasts becomes possible as more years build up.
+- **Intervals react slowly:** right on average, but monthly coverage fell to 78% in the worst
+  months, because they are set from the previous six months.
+- **Solar capacity keeps growing** past what each refit has seen (by about 1% on average), and
+  trees cannot extrapolate.
+- **The service runs locally** (tested in Docker Desktop). It is not deployed or scheduled, and
+  live forecasts are not stored or scored yet.
+
+## Notebooks
+
+| | Notebook | What it settles |
+|---|---|---|
+| 01 | `01_data_and_definitions` | NESO's historic data, what `ND` and `TSD` mean, clock-change days |
+| 02 | `02_benchmark_alignment` | NESO's benchmark, its timestamps, how forecasts are scored |
+| 03 | `03_eda` | trend, seasons, weekdays, holidays, solar, lags (data before June 2024 only) |
+| 04 | `04_weather_and_cutoff` | the 08:30 UTC cut-off, live demand, weather sources, the leak in `_previous_day1` |
+| 05 | `05_baselines` | rolling validation folds and simple baselines |
+| 06 | `06_lightgbm_point` | the LightGBM point forecast and what each choice is worth |
+| 07 | `07_quantiles` | quantile forecasts, pinball loss and coverage |
+| 08 | `08_calibration_and_test` | calibration, then the one run on the test window |
+| 09 | `09_monitoring` | drift, accuracy and coverage month by month |
 
 ## Live forecasts
 
@@ -85,7 +130,8 @@ monthly MAE against NESO, and 90% interval coverage. Over the test window:
 - [Open-Meteo](https://open-meteo.com): ERA5 reanalysis and archived forecasts (Previous Runs API), CC BY 4.0
 
 NESO data is used under the [NESO Open Data Licence](https://www.neso.energy/data-portal/ngeso-open-licence).
-Data files are not stored in this repo; the notebooks download them.
+Data files are not stored in this repo; the pipeline's `download` stage (or the notebooks)
+fetches them. Open-Meteo's free API is for non-commercial use.
 
 ## Code and pipeline
 
