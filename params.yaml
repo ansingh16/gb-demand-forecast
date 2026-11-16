@@ -1,0 +1,18 @@
+# Settings read by the pipeline and tracked by DVC. Chosen on validation data (notebooks 06 to 08).
+model:
+  n_estimators: 600
+  learning_rate: 0.05
+  num_leaves: 63
+  min_child_samples: 50
+  subsample: 0.8
+  subsample_freq: 1
+  colsample_bytree: 0.8
+  n_jobs: 4
+  random_state: 0
+  verbose: -1
+backtest:
+  test_start: "2024-06-01"
+  calibration_start: "2024-03-08"  # first day with archived forecast radiation for every half-hour
+  training_gap_days: 7             # ERA5 is published about five days late
+  calibration_gap_days: 2          # outturn is known after the day
+  calibration_months: 6
