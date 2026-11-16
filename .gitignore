@@ -13,3 +13,6 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+
+# trained models are rebuilt by `dvc repro`
+models/

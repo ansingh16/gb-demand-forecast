@@ -1,0 +1,71 @@
+# Run with `uv run dvc repro`. Data stays out of git; DVC tracks what each stage used.
+stages:
+  download:
+    cmd: python -m gb_demand.pipeline download
+    deps:
+      - src/gb_demand/sources.py
+    outs:
+      - data/raw:
+          cache: false
+          persist: true
+  prepare:
+    cmd: python -m gb_demand.pipeline prepare
+    deps:
+      - data/raw
+      - src/gb_demand/prepare.py
+      - src/gb_demand/periods.py
+      - src/gb_demand/weather.py
+    outs:
+      - data/processed/demand.parquet:
+          cache: false
+      - data/processed/neso_benchmark.parquet:
+          cache: false
+      - data/processed/indo.parquet:
+          cache: false
+      - data/processed/weather_actual.parquet:
+          cache: false
+      - data/processed/weather_forecast.parquet:
+          cache: false
+  features:
+    cmd: python -m gb_demand.pipeline features
+    deps:
+      - data/processed/demand.parquet
+      - data/processed/neso_benchmark.parquet
+      - data/processed/indo.parquet
+      - data/processed/weather_actual.parquet
+      - data/processed/weather_forecast.parquet
+      - src/gb_demand/features.py
+      - src/gb_demand/cutoff.py
+    outs:
+      - data/processed/features_actual.parquet:
+          cache: false
+      - data/processed/features_forecast.parquet:
+          cache: false
+  backtest:
+    cmd: python -m gb_demand.pipeline backtest
+    deps:
+      - data/processed/features_actual.parquet
+      - data/processed/features_forecast.parquet
+      - src/gb_demand/model.py
+      - src/gb_demand/calibration.py
+      - src/gb_demand/pipeline.py
+    params:
+      - model
+      - backtest
+    outs:
+      - data/processed/test_forecasts.parquet:
+          cache: false
+    metrics:
+      - reports/metrics.json:
+          cache: false
+  train:
+    cmd: python -m gb_demand.pipeline train
+    deps:
+      - data/processed/features_actual.parquet
+      - data/processed/test_forecasts.parquet
+      - src/gb_demand/model.py
+    params:
+      - model
+    outs:
+      - models/latest:
+          cache: false

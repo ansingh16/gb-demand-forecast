@@ -1,0 +1,181 @@
+schema: '2.0'
+stages:
+  download:
+    cmd: python -m gb_demand.pipeline download
+    deps:
+    - path: src/gb_demand/sources.py
+      hash: md5
+      md5: 05a8055a517d0d1a9acd76aac5532bc9
+      size: 7657
+    outs:
+    - path: data/raw
+      hash: md5
+      md5: 68f713c1f57fbe6a729419c8673cd08b.dir
+      size: 32431833
+      nfiles: 15
+  prepare:
+    cmd: python -m gb_demand.pipeline prepare
+    deps:
+    - path: data/raw
+      hash: md5
+      md5: 68f713c1f57fbe6a729419c8673cd08b.dir
+      size: 32431833
+      nfiles: 15
+    - path: src/gb_demand/periods.py
+      hash: md5
+      md5: 28ff6c963ae499a0fdd33651be59322d
+      size: 1489
+    - path: src/gb_demand/prepare.py
+      hash: md5
+      md5: 5956db02b5bd0a485f27e7da58e830c5
+      size: 2945
+    - path: src/gb_demand/weather.py
+      hash: md5
+      md5: d1233e610f9f622bf96bac6e7755df17
+      size: 1688
+    outs:
+    - path: data/processed/demand.parquet
+      hash: md5
+      md5: b281008071e78f831491b5861f9149b4
+      size: 4717543
+    - path: data/processed/indo.parquet
+      hash: md5
+      md5: cfd72895ef001df6725e0109340c69a2
+      size: 3225416
+    - path: data/processed/neso_benchmark.parquet
+      hash: md5
+      md5: 3b134304f9c488314b24768c58c23129
+      size: 1795035
+    - path: data/processed/weather_actual.parquet
+      hash: md5
+      md5: 34bcd0f85edb2e9dc65fb3bb632f203c
+      size: 2375504
+    - path: data/processed/weather_forecast.parquet
+      hash: md5
+      md5: b16b227ae0b0cde5b811aa704134f535
+      size: 817949
+  features:
+    cmd: python -m gb_demand.pipeline features
+    deps:
+    - path: data/processed/demand.parquet
+      hash: md5
+      md5: b281008071e78f831491b5861f9149b4
+      size: 4717543
+    - path: data/processed/indo.parquet
+      hash: md5
+      md5: cfd72895ef001df6725e0109340c69a2
+      size: 3225416
+    - path: data/processed/neso_benchmark.parquet
+      hash: md5
+      md5: 3b134304f9c488314b24768c58c23129
+      size: 1795035
+    - path: data/processed/weather_actual.parquet
+      hash: md5
+      md5: 34bcd0f85edb2e9dc65fb3bb632f203c
+      size: 2375504
+    - path: data/processed/weather_forecast.parquet
+      hash: md5
+      md5: b16b227ae0b0cde5b811aa704134f535
+      size: 817949
+    - path: src/gb_demand/cutoff.py
+      hash: md5
+      md5: f9f901e676606f567b861e2b71593d84
+      size: 1024
+    - path: src/gb_demand/features.py
+      hash: md5
+      md5: a15f1470349d0e7f2ce5e549fd3d7f4e
+      size: 6792
+    outs:
+    - path: data/processed/features_actual.parquet
+      hash: md5
+      md5: 2994ea5c3961847329a62add6423f82d
+      size: 4834349
+    - path: data/processed/features_forecast.parquet
+      hash: md5
+      md5: f66d418efc80da78255a396d86abd1ea
+      size: 4034212
+  backtest:
+    cmd: python -m gb_demand.pipeline backtest
+    deps:
+    - path: data/processed/features_actual.parquet
+      hash: md5
+      md5: 2994ea5c3961847329a62add6423f82d
+      size: 4834349
+    - path: data/processed/features_forecast.parquet
+      hash: md5
+      md5: f66d418efc80da78255a396d86abd1ea
+      size: 4034212
+    - path: src/gb_demand/calibration.py
+      hash: md5
+      md5: 0b8849add9da8a424557722772ace512
+      size: 1910
+    - path: src/gb_demand/model.py
+      hash: md5
+      md5: ff2c79195b9fba4dc796b38e73fe5872
+      size: 1939
+    - path: src/gb_demand/pipeline.py
+      hash: md5
+      md5: 031f3fba6dbd9a215b1512859828fb75
+      size: 8632
+    params:
+      params.yaml:
+        backtest:
+          test_start: '2024-06-01'
+          calibration_start: '2024-03-08'
+          training_gap_days: 7
+          calibration_gap_days: 2
+          calibration_months: 6
+        model:
+          n_estimators: 600
+          learning_rate: 0.05
+          num_leaves: 63
+          min_child_samples: 50
+          subsample: 0.8
+          subsample_freq: 1
+          colsample_bytree: 0.8
+          n_jobs: 4
+          random_state: 0
+          verbose: -1
+    outs:
+    - path: data/processed/test_forecasts.parquet
+      hash: md5
+      md5: 17d52560b8a799b52327e44645c07ae2
+      size: 6705767
+    - path: reports/metrics.json
+      hash: md5
+      md5: d1ae2e76fb90254e390427ef1974155b
+      size: 395
+  train:
+    cmd: python -m gb_demand.pipeline train
+    deps:
+    - path: data/processed/features_actual.parquet
+      hash: md5
+      md5: 2994ea5c3961847329a62add6423f82d
+      size: 4834349
+    - path: data/processed/test_forecasts.parquet
+      hash: md5
+      md5: 17d52560b8a799b52327e44645c07ae2
+      size: 6705767
+    - path: src/gb_demand/model.py
+      hash: md5
+      md5: ff2c79195b9fba4dc796b38e73fe5872
+      size: 1939
+    params:
+      params.yaml:
+        model:
+          n_estimators: 600
+          learning_rate: 0.05
+          num_leaves: 63
+          min_child_samples: 50
+          subsample: 0.8
+          subsample_freq: 1
+          colsample_bytree: 0.8
+          n_jobs: 4
+          random_state: 0
+          verbose: -1
+    outs:
+    - path: models/latest
+      hash: md5
+      md5: 2a303e49dafa81fa13ffe13736751048.dir
+      size: 27378762
+      nfiles: 12

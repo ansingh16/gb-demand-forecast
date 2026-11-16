@@ -1,0 +1,18 @@
+{
+  "half_hours": 42818,
+  "first_day": "2024-06-01",
+  "last_day": "2026-11-09",
+  "mae": 879.9092,
+  "mape": 3.5856,
+  "rmse": 1160.0249,
+  "bias": 75.8764,
+  "neso_mae": 688.5661,
+  "neso_mape": 2.7795,
+  "months_better_than_neso": 0,
+  "months": 30,
+  "coverage_50%": 0.4945,
+  "coverage_80%": 0.791,
+  "coverage_90%": 0.8849,
+  "interval_score_90%": 4698.3318,
+  "pinball_q0.5": 442.2701
+}

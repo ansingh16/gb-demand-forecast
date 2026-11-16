@@ -5,7 +5,8 @@ compared with the day-ahead forecast published by the National Energy System Ope
 (NESO).
 
 Work in progress. The notebooks in `notebooks/` are numbered in working order, and each
-step explains what is being done and why.
+step explains what is being done and why. The code they settled on lives in `src/gb_demand/`,
+with tests, and runs as a DVC pipeline.
 
 ## Results so far
 
@@ -38,7 +39,7 @@ The ten most important issues found while building the forecast. The notebook nu
 | 7 | Quantile models were overconfident: the 90% interval held the outcome only 74% of the time, and 71% of rows had quantiles out of order | coverage and crossing checks on validation (07) | compared conformal calibration with the point forecast plus recent out-of-sample errors, chose by interval score on validation | 88.5% coverage for the 90% interval on the test window |
 | 8 | Calibrating on actual-weather errors would understate the errors with forecast weather | followed from notebook 04's results (08) | calibrate each test month only on forecast-weather errors known before it | coverage held on unseen data |
 | 9 | Open-Meteo radiation is the mean over the hour **before** the timestamp, while temperature is the value at it | read the variable definitions (04) | each half-hour takes radiation from the hour that contains it | sunlight lands in the right half-hours |
-| 10 | Training was slow: about 25 seconds per LightGBM fit | one validation run took 47 minutes (06) | moved the project to uv with a lock file and set the thread count | about 2 seconds per fit, identical results |
+| 10 | Code copied out of notebooks can quietly differ from what was tested, and a cut-off rule is easy to break later | ported everything to a package, rebuilt every table and reran the test window through it (Day 9) | compared each table and forecast with the notebook versions; added a test that changes every demand value published after the forecast time and checks that no feature moves | identical tables and test forecasts (largest difference 0 MW over 42,818 half-hours); the leak test runs in CI on every push |
 
 ### Still open
 
@@ -58,9 +59,24 @@ The ten most important issues found while building the forecast. The notebook nu
 NESO data is used under the [NESO Open Data Licence](https://www.neso.energy/data-portal/ngeso-open-licence).
 Data files are not stored in this repo; the notebooks download them.
 
+## Code and pipeline
+
+| Path | What it does |
+|---|---|
+| `src/gb_demand/periods.py`, `cutoff.py` | settlement periods to UTC; what is known at the 08:30 UTC forecast time |
+| `src/gb_demand/sources.py`, `prepare.py` | downloads from NESO, Elexon and Open-Meteo, and cleaning |
+| `src/gb_demand/features.py`, `model.py`, `calibration.py` | features, LightGBM point and quantile models, calibrated intervals |
+| `src/gb_demand/pipeline.py` | the stages below; the backtest is logged to MLflow |
+| `dvc.yaml`, `params.yaml` | stages `download → prepare → features → backtest → train` and their settings |
+| `reports/metrics.json` | test-window scores from the latest backtest |
+| `tests/` | period handling, cut-off rules (including a leak test), weather alignment, intervals |
+
 ## Running
 
 ```
-uv sync
-uv run jupyter lab
+uv sync                     # Python 3.12 environment from uv.lock
+uv run dvc repro            # download data, build features, backtest (about 25 minutes), train
+uv run mlflow ui --backend-store-uri sqlite:///mlflow.db   # backtest runs
+uv run pytest               # tests
+uv run jupyter lab          # notebooks
 ```
