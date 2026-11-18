@@ -97,8 +97,10 @@ The ten most important issues found while building the forecast. The notebook nu
 ## Live forecasts
 
 The `train` stage fits the models on everything known and saves them with the interval table.
-The service then builds the next day's features from live data: Elexon demand up to 08:00 UTC
-on the day before (the same cut-off as in testing) and the latest Open-Meteo weather forecast.
+The service then builds the next day's features from public data: Elexon demand up to 08:00
+UTC on the day before and Open-Meteo forecasts made 48 hours ahead, the same inputs and cut-off
+as in testing. Because every input is fixed at that moment, a past day can be replayed and gives
+the forecast that would have been made then; days the model was trained on are refused.
 
 ```
 uv run dvc repro                     # or: uv run python -m gb_demand.pipeline train

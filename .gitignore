@@ -11,8 +11,12 @@ mlflow.db
 # data is downloaded by the notebooks, not stored in git
 data/raw/*
 data/processed/*
+data/live/
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
 # trained models are rebuilt by `dvc repro`
 models/
+
+# airflow state
+orchestration/airflow_home/

@@ -51,12 +51,17 @@ def fake_weather(locations, target):
                       for city in locations["city"]], ignore_index=True)
 
 
-def test_targets_open_at_the_origin_and_close_at_the_end_of_the_day():
+def test_targets_open_at_the_origin_and_past_days_can_be_replayed():
     assert check_target("2025-02-03", NOW) == pd.Timestamp("2025-02-03")
+    assert check_target("2025-01-25", NOW) == pd.Timestamp("2025-01-25")   # replay
     with pytest.raises(NotReady):
         check_target("2025-02-04", NOW)             # origin is 08:30 on 3 February
+
+
+def test_replay_refuses_days_the_model_was_trained_on():
     with pytest.raises(NotReady):
-        check_target("2025-02-01", NOW)             # already over
+        check_target("2025-01-20", NOW, trained_until="2025-01-20")
+    assert check_target("2025-01-21", NOW, trained_until="2025-01-20") == pd.Timestamp("2025-01-21")
 
 
 def test_live_forecast_is_complete_and_ordered(model_folder):
@@ -80,7 +85,7 @@ def test_api_returns_periods_and_refuses_early_requests(model_folder, monkeypatc
     monkeypatch.setenv("GB_DEMAND_MODELS", str(model_folder))
     monkeypatch.setattr(api, "_forecaster", None)
     monkeypatch.setattr("gb_demand.sources.fetch_indo", fake_indo)
-    monkeypatch.setattr("gb_demand.sources.fetch_live_forecast", fake_weather)
+    monkeypatch.setattr("gb_demand.sources.fetch_day2_forecast", fake_weather)
     client = TestClient(api.app)
 
     assert client.get("/health").json()["model"]["trained_until"] == "2025-01-20"
@@ -94,3 +99,16 @@ def test_api_returns_periods_and_refuses_early_requests(model_folder, monkeypatc
     too_early = client.get("/forecast", params={"date": f"{today + pd.Timedelta(days=5):%Y-%m-%d}"})
     assert too_early.status_code == 409
     assert client.get("/forecast", params={"date": "tomorrow"}).status_code == 422
+
+
+def test_ops_forecast_writes_one_file_per_day_and_reruns_cleanly(model_folder, tmp_path):
+    from gb_demand import ops
+
+    live = tmp_path / "live"
+    kwargs = dict(folder=model_folder, live=live, fetch_indo=fake_indo, fetch_weather=fake_weather)
+    first = ops.forecast("2025-02-03", **kwargs)
+    second = ops.forecast("2025-02-03", **kwargs)
+    files = list((live / "forecasts").iterdir())
+    assert [f.name for f in files] == ["2025-02-03.parquet"]
+    pd.testing.assert_series_equal(first["point"], second["point"])
+    assert pd.read_parquet(files[0])["target_date"].unique().tolist() == ["2025-02-03"]

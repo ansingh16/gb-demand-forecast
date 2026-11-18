@@ -18,7 +18,6 @@ ELEXON_INDO = "https://data.elexon.co.uk/bmrs/api/v1/demand/outturn"
 GEOCODING = "https://geocoding-api.open-meteo.com/v1/search"
 ERA5_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
 PREVIOUS_RUNS = "https://previous-runs-api.open-meteo.com/v1/forecast"
-FORECAST = "https://api.open-meteo.com/v1/forecast"
 FORECAST_ARCHIVE_START = "2024-01-01"
 
 
@@ -153,17 +152,20 @@ def download_forecast_weather(raw, locations, refresh=False):
     pd.concat(parts, ignore_index=True).to_parquet(path, index=False)
 
 
-def fetch_live_forecast(locations, target_date):
-    """The latest weather forecast for one local day (live use), hourly, every location.
+def fetch_day2_forecast(locations, target_date):
+    """`_previous_day2` forecasts for one local day, hourly, every location.
 
-    One extra hour either side is kept so half-hours at the edges can be interpolated.
+    The same source as the backtest. Every hour of day D comes from a model run started 48
+    hours earlier, before the 08:30 UTC origin on D-1, so the values are the same whether they
+    are fetched at the origin or replayed later. The day before and after are included so the
+    half-hours at the edges can be interpolated; hours not yet forecast are dropped.
     """
     day = pd.Timestamp(target_date)
-    payload = get_json(FORECAST, {
-        **coordinates(locations), "hourly": ",".join(VARIABLES), "timezone": "GMT",
-        "start_date": f"{day - pd.Timedelta(days=1):%Y-%m-%d}",
+    payload = get_json(PREVIOUS_RUNS, {
+        **coordinates(locations), "hourly": ",".join(v + FORECAST_SUFFIX for v in VARIABLES),
+        "timezone": "GMT", "start_date": f"{day - pd.Timedelta(days=1):%Y-%m-%d}",
         "end_date": f"{day + pd.Timedelta(days=1):%Y-%m-%d}"})
-    return to_long(payload, locations["city"])
+    return to_long(payload, locations["city"], suffix=FORECAST_SUFFIX).dropna(subset=VARIABLES)
 
 
 def download_all(raw, refresh=False):
