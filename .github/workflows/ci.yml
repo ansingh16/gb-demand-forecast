@@ -18,3 +18,18 @@ jobs:
         run: uv run --no-sync ruff check .
       - name: test
         run: uv run --no-sync pytest -q
+
+  dags:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: orchestration
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: install airflow
+        run: uv sync --frozen
+      - name: dags import
+        run: uv run --no-sync pytest -q tests
