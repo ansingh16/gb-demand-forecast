@@ -77,8 +77,9 @@ The ten most important issues found while building the forecast. The notebook nu
   months, because they are set from the previous six months.
 - **Solar capacity keeps growing** past what each refit has seen (by about 1% on average), and
   trees cannot extrapolate.
-- **The service runs locally** (tested in Docker Desktop). It is not deployed or scheduled, and
-  live forecasts are not stored or scored yet.
+- **Runs on a laptop:** the service (tested in Docker Desktop) and the Airflow scheduler run
+  locally, not on a server, so forecasts are made on days the laptop is on and missed days are
+  filled in later. Stored forecasts are not scored against outturn yet.
 
 ## Notebooks
 
@@ -113,6 +114,26 @@ A day can be forecast from 08:30 UTC on the day before until it ends; other date
 Example, made at 14:47 UTC on 16 November 2026 for the next day: evening peak 41,118 MW at 17:30,
 90% interval 39,806 to 43,141 MW. The image was built and run with Docker Desktop.
 
+## Scheduling with Airflow
+
+An Airflow DAG, `daily_forecast`, runs at 08:35 UTC each day and saves the next day's forecast
+to `data/live/forecasts/`. Each task runs a command from `gb_demand.ops` in the project's own
+environment, while Airflow has its own environment in `orchestration/`, so the two never share
+dependencies.
+
+The task only uses the run's date and data fixed at that day's 08:30 UTC cut-off, so runs are
+safe to repeat and missed days are filled in when the scheduler next starts (catchup), with the
+forecast that would have been made on time.
+
+```
+cd orchestration && uv sync && cd ..
+orchestration/airflow.sh db migrate
+orchestration/airflow.sh standalone                            # scheduler and UI on localhost:8080
+orchestration/airflow.sh dags test daily_forecast 2026-11-18   # one run, no scheduler
+```
+
+Scoring each day's forecast against outturn and a monthly retrain are the next DAGs.
+
 ## Monitoring
 
 `python -m gb_demand.monitor` writes [`reports/monitoring.md`](reports/monitoring.md):
@@ -143,11 +164,12 @@ fetches them. Open-Meteo's free API is for non-commercial use.
 | `src/gb_demand/sources.py`, `prepare.py` | downloads from NESO, Elexon and Open-Meteo, and cleaning |
 | `src/gb_demand/features.py`, `model.py`, `calibration.py` | features, LightGBM point and quantile models, calibrated intervals |
 | `src/gb_demand/pipeline.py` | the stages below; the backtest is logged to MLflow |
-| `src/gb_demand/live.py`, `api.py`, `Dockerfile` | live forecast from today's Elexon and Open-Meteo data, served with FastAPI |
+| `src/gb_demand/live.py`, `api.py`, `Dockerfile` | forecast for any day once its cut-off has passed, served with FastAPI |
+| `src/gb_demand/ops.py`, `dags/`, `orchestration/` | daily tasks and the Airflow DAG that schedules them |
 | `src/gb_demand/monitor.py`, `reports/monitoring.md` | input drift, accuracy and interval coverage by month (notebook 09) |
 | `dvc.yaml`, `params.yaml` | stages `download → prepare → features → backtest → train` and their settings |
 | `reports/metrics.json` | test-window scores from the latest backtest |
-| `tests/` | period handling, cut-off rules (including a leak test), weather alignment, intervals, the API, monitoring |
+| `tests/` | period handling, cut-off rules (including a leak test), weather alignment, intervals, the API, replay, monitoring; `orchestration/tests/` checks the DAGs load |
 
 ## Running
 
