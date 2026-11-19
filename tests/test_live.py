@@ -1,54 +1,13 @@
-import json
-
-import lightgbm as lgb
-import numpy as np
 import pandas as pd
 import pytest
+from fakes import fake_indo, fake_weather
 from fastapi.testclient import TestClient
 
 from gb_demand import api
-from gb_demand.config import COLUMNS, QUANTILES
 from gb_demand.cutoff import latest_demand_allowed
 from gb_demand.live import Forecaster, NotReady, check_target
 
 NOW = pd.Timestamp("2025-02-02 12:00", tz="UTC")
-
-
-@pytest.fixture
-def model_folder(tmp_path):
-    """Tiny models with the real file layout, trained on random rows."""
-    rng = np.random.default_rng(0)
-    x = pd.DataFrame(rng.normal(size=(500, len(COLUMNS))), columns=COLUMNS)
-    y = rng.normal(0, 500, 500)
-    params = dict(n_estimators=5, num_leaves=4, min_child_samples=5, verbose=-1)
-    lgb.LGBMRegressor(**params).fit(x, y).booster_.save_model(tmp_path / "point.txt")
-    for q in QUANTILES:
-        lgb.LGBMRegressor(objective="quantile", alpha=q, **params).fit(x, y).booster_.save_model(
-            tmp_path / f"{q}.txt")
-    errors = pd.DataFrame({q: np.full(48, 2000 * (q - 0.5)) for q in QUANTILES}, index=range(48))
-    errors.to_csv(tmp_path / "error_quantiles.csv")
-    pd.Series(15_000.0, index=pd.date_range("2024-12-01", "2025-01-31"), name="solar_capacity").to_csv(
-        tmp_path / "solar_capacity.csv")
-    pd.DataFrame({"city": ["A", "B"], "latitude": [51.5, 53.5], "longitude": [-0.1, -2.2]}).to_csv(
-        tmp_path / "weather_locations.csv", index=False)
-    (tmp_path / "meta.json").write_text(json.dumps({"trained_until": "2025-01-20"}))
-    return tmp_path
-
-
-def fake_indo(start, end):
-    times = pd.date_range(pd.Timestamp(start, tz="UTC"), pd.Timestamp(end, tz="UTC") + pd.Timedelta(days=1),
-                          freq="30min", inclusive="left")
-    return pd.DataFrame({"startTime": times.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                         "publishTime": (times + pd.Timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                         "settlementDate": times.strftime("%Y-%m-%d"), "settlementPeriod": 1,
-                         "initialDemandOutturn": 25_000 + 3_000 * np.sin(times.hour / 24 * 2 * np.pi)})
-
-
-def fake_weather(locations, target):
-    times = pd.date_range(pd.Timestamp(target, tz="UTC") - pd.Timedelta(days=1), periods=72, freq="h")
-    return pd.concat([pd.DataFrame({"time": times, "city": city, "temperature_2m": 5.0,
-                                    "shortwave_radiation": 100.0, "wind_speed_10m": 15.0})
-                      for city in locations["city"]], ignore_index=True)
 
 
 def test_targets_open_at_the_origin_and_past_days_can_be_replayed():
@@ -100,15 +59,3 @@ def test_api_returns_periods_and_refuses_early_requests(model_folder, monkeypatc
     assert too_early.status_code == 409
     assert client.get("/forecast", params={"date": "tomorrow"}).status_code == 422
 
-
-def test_ops_forecast_writes_one_file_per_day_and_reruns_cleanly(model_folder, tmp_path):
-    from gb_demand import ops
-
-    live = tmp_path / "live"
-    kwargs = dict(folder=model_folder, live=live, fetch_indo=fake_indo, fetch_weather=fake_weather)
-    first = ops.forecast("2025-02-03", **kwargs)
-    second = ops.forecast("2025-02-03", **kwargs)
-    files = list((live / "forecasts").iterdir())
-    assert [f.name for f in files] == ["2025-02-03.parquet"]
-    pd.testing.assert_series_equal(first["point"], second["point"])
-    assert pd.read_parquet(files[0])["target_date"].unique().tolist() == ["2025-02-03"]

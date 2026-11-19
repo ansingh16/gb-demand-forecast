@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from fakes import make_model_folder
 
 
 @pytest.fixture
@@ -12,3 +13,8 @@ def indo():
     values = 25_000 + 5_000 * np.sin((hours - 6) / 24 * 2 * np.pi) + np.arange(len(times))
     return pd.DataFrame({"start_utc": times, "INDO": values.round(),
                          "publish_utc": times + pd.Timedelta(minutes=30)})
+
+
+@pytest.fixture
+def model_folder(tmp_path):
+    return make_model_folder(tmp_path / "models" / "latest")

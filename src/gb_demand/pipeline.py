@@ -143,12 +143,11 @@ def stage_backtest():
     log_to_mlflow(params, summary, path)
 
 
-def stage_train():
-    """Fit on everything known and save what the service needs."""
+def stage_train(folder=MODELS / "latest"):
+    """Fit on everything known and save what the service needs in `folder`."""
     params = load_params()
     features = pd.read_parquet(PROCESSED / "features_actual.parquet")
     train = features[features["ND"].notna()]
-    folder = MODELS / "latest"
     model.save(model.fit(train, params["model"], QUANTILES), folder)
 
     test = pd.read_parquet(PROCESSED / "test_forecasts.parquet")
@@ -172,9 +171,12 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("stage", choices=["download", "prepare", "features", "backtest", "train"])
     parser.add_argument("--refresh", action="store_true", help="download: fetch the latest data")
+    parser.add_argument("--out", help="train: folder to save the models in (default models/latest)")
     args = parser.parse_args()
     if args.stage == "download":
         stage_download(args.refresh)
+    elif args.stage == "train" and args.out:
+        stage_train(MODELS.parent / args.out)
     else:
         globals()[f"stage_{args.stage}"]()
 
