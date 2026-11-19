@@ -57,8 +57,8 @@ The ten most important issues found while building the forecast. The notebook nu
 | 4 | Exploring the whole dataset would let the test period shape the model | planned up front (03) | exploration stops at 31 May 2024; the test window was run once, at the end | validation gap to NESO (174 MW) matched the test gap (191 MW) |
 | 5 | The plan only allowed demand from two days back, assuming no live data | checked when Elexon's live demand (`INDO`) is published (04) | use `INDO` up to 08:00 UTC the day before, from the same source in training and testing | the latest day of demand cut baseline MAE by 6% |
 | 6 | Trees cannot predict outside their training range, and demand has fallen about 4 GW since 2018 | the direct model scored worse than expected (06) | predict demand minus the latest 24 hours of live demand | validation MAE 851 to 786 MW |
-| 7 | Quantile models were overconfident: the 90% interval held the outcome only 74% of the time, and 71% of rows had quantiles out of order | coverage and crossing checks on validation (07) | compared conformal calibration with the point forecast plus recent out-of-sample errors, chose by interval score on validation | 88.5% coverage for the 90% interval on the test window |
-| 8 | Calibrating on actual-weather errors would understate the errors with forecast weather | followed from notebook 04's results (08) | calibrate each test month only on forecast-weather errors known before it | coverage held on unseen data |
+| 7 | Quantile models were overconfident: the 90% interval held the outcome only 74% of the time, and 71% of rows had quantiles out of order | coverage and crossing checks on validation (07) | compared conformal calibration with the point forecast plus recent out-of-sample errors, chose by interval score on validation, then calibrated each test month only on forecast-weather errors known before it | 88.5% coverage for the 90% interval on the test window |
+| 8 | Filling in missed days with today's model would leak: it was trained on demand up to a recent date and could "forecast" days it had learnt from | designing catch-up for the Airflow DAG (Airflow) | every input is fixed at the day's 08:30 UTC cut-off (archived 48-hour weather, live demand to 08:00), and replays of days on or before the model's last training day are refused | missed days get the forecast that would have been made on time; a replay of 10 October was refused by a model trained to 19 October |
 | 9 | A first drift check flagged almost every input in every month | ran it over the 30 test months (09) | compare each month with the same calendar month in past years; report but do not alert on inputs that follow known trends (demand level, solar capacity); rerun the weather check on ERA5 to separate the forecast feed from real weather | temperature flags fell from 30 months to 12, and 90 of 109 drift flags were trends; half the temperature drift turned out to be the forecast feed differing from the ERA5 training data |
 | 10 | Code copied out of notebooks can quietly differ from what was tested, and a cut-off rule is easy to break later | ported everything to a package, rebuilt every table and reran the test window through it (Day 9) | compared each table and forecast with the notebook versions; added a test that changes every demand value published after the forecast time and checks that no feature moves | identical tables and test forecasts (largest difference 0 MW over 42,818 half-hours); the leak test runs in CI on every push |
 
@@ -79,7 +79,9 @@ The ten most important issues found while building the forecast. The notebook nu
   trees cannot extrapolate.
 - **Runs on a laptop:** the service (tested in Docker Desktop) and the Airflow scheduler run
   locally, not on a server, so forecasts are made on days the laptop is on and missed days are
-  filled in later. Stored forecasts are not scored against outturn yet.
+  filled in later. The live record started in November 2026 and is still short.
+- **Live scores use Elexon's early outturn** (`INDO`, about 36 MW below `ND`), and are compared
+  with NESO only after the monthly refresh brings in NESO's benchmark file.
 
 ## Notebooks
 
@@ -116,14 +118,44 @@ Example, made at 14:47 UTC on 16 November 2026 for the next day: evening peak 41
 
 ## Scheduling with Airflow
 
-An Airflow DAG, `daily_forecast`, runs at 08:35 UTC each day and saves the next day's forecast
-to `data/live/forecasts/`. Each task runs a command from `gb_demand.ops` in the project's own
-environment, while Airflow has its own environment in `orchestration/`, so the two never share
-dependencies.
+Three DAGs in `dags/gb_demand.py` run the forecast as a daily service. Each task runs a command
+from `gb_demand.ops` or `gb_demand.pipeline` in the project's own environment, while Airflow
+has its own environment in `orchestration/`, so the two never share dependencies.
 
-The task only uses the run's date and data fixed at that day's 08:30 UTC cut-off, so runs are
-safe to repeat and missed days are filled in when the scheduler next starts (catchup), with the
-forecast that would have been made on time.
+| DAG | When (UTC) | What it does |
+|---|---|---|
+| `daily_forecast` | 08:35 every day | forecasts the next day and saves it to `data/live/forecasts/` |
+| `daily_score` | 02:00 every day | scores yesterday's forecast against Elexon outturn once all periods are published (retries hourly until then), then checks the last 30 days: the 90% interval must hold 85% to 95% of outcomes and MAE must stay under 1.5 times the backtest's |
+| `monthly_retrain` | 03:00 on the 2nd | refreshes the data, reruns the backtest (`dvc repro`), and promotes a retrained model only if it passes a gate; the old model is kept for a rollback |
+
+**Missed days are filled in honestly.** The forecast task only uses the run's date and data
+fixed at that day's 08:30 UTC cut-off, including weather forecasts already archived 48 hours
+ahead. So runs are safe to repeat, and when the scheduler starts after a gap (catchup) it makes
+the forecasts that would have been made on time. Replays of days the model was trained on are
+refused.
+
+**The gate** fits a candidate the way the backtest did (data up to seven days before the latest
+14 days) and scores it and the model in service on those 14 days, which neither has seen, with
+forecast weather. Its job is to stop a broken refresh or code change from reaching the service,
+so the candidate passes if it is no more than 5% worse. In a test on real data, with a
+month-old model in service, the candidate scored 970 MW against 938 MW on 16 to 29 October 2026
+(3.4% worse, within the noise of two weeks), passed, and was promoted. If the model in service
+has already seen the latest 14 days, the gate is skipped and nothing is promoted.
+
+**What the end-to-end runs caught:** a full monthly run on real data, rather than the unit
+tests, found four faults, all fixed: the refresh died on an Open-Meteo timeout because only rate
+limits were retried (it now retries timeouts, and fetches only new days instead of every year
+since 2018); the DVC task failed because the PATH under WSL contains folders with spaces; the
+gate held out Christmas 2025 instead of the latest days, because `christmas` is empty outside
+the holidays by design and was treated as missing; and a test run dated before the DAG's start
+date "succeeded" in 0.07 seconds without running a task.
+
+**Scoring against NESO day to day is not possible yet.** Elexon's `NDF` dataset looks like a
+daily copy of NESO's day-ahead forecast, but it is first published for a day at about 11:45 UTC
+the day before, after NESO's benchmark forecast, and differs from it (MAE 267 MW against the
+benchmark on 5 November 2026). So live scores compare with NESO only once the monthly refresh
+brings in NESO's benchmark file. Live forecasts are scored on `INDO`, which runs about 36 MW
+below `ND`.
 
 ```
 cd orchestration && uv sync && cd ..
@@ -131,8 +163,6 @@ orchestration/airflow.sh db migrate
 orchestration/airflow.sh standalone                            # scheduler and UI on localhost:8080
 orchestration/airflow.sh dags test daily_forecast 2026-11-18   # one run, no scheduler
 ```
-
-Scoring each day's forecast against outturn and a monthly retrain are the next DAGs.
 
 ## Monitoring
 
@@ -165,11 +195,11 @@ fetches them. Open-Meteo's free API is for non-commercial use.
 | `src/gb_demand/features.py`, `model.py`, `calibration.py` | features, LightGBM point and quantile models, calibrated intervals |
 | `src/gb_demand/pipeline.py` | the stages below; the backtest is logged to MLflow |
 | `src/gb_demand/live.py`, `api.py`, `Dockerfile` | forecast for any day once its cut-off has passed, served with FastAPI |
-| `src/gb_demand/ops.py`, `dags/`, `orchestration/` | daily tasks and the Airflow DAG that schedules them |
+| `src/gb_demand/ops.py`, `dags/`, `orchestration/` | forecast, score, check, gate and promote tasks, and the Airflow DAGs that schedule them |
 | `src/gb_demand/monitor.py`, `reports/monitoring.md` | input drift, accuracy and interval coverage by month (notebook 09) |
 | `dvc.yaml`, `params.yaml` | stages `download → prepare → features → backtest → train` and their settings |
 | `reports/metrics.json` | test-window scores from the latest backtest |
-| `tests/` | period handling, cut-off rules (including a leak test), weather alignment, intervals, the API, replay, monitoring; `orchestration/tests/` checks the DAGs load |
+| `tests/` | period handling, cut-off rules (including a leak test), weather alignment, intervals, the API, replay, scoring, the gate, download retries, monitoring; `orchestration/tests/` checks the DAGs |
 
 ## Running
 
