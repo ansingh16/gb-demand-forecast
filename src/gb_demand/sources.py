@@ -21,15 +21,32 @@ PREVIOUS_RUNS = "https://previous-runs-api.open-meteo.com/v1/forecast"
 FORECAST_ARCHIVE_START = "2024-01-01"
 
 
-def get_json(url, params, tries=5, wait=65):
-    """GET with a pause and retry when the API says too many requests (HTTP 429)."""
-    for _ in range(tries):
-        response = requests.get(url, params=params, timeout=300)
-        if response.status_code != 429:
-            response.raise_for_status()
-            return response.json()
-        time.sleep(wait)
-    response.raise_for_status()
+def get_json(url, params, tries=5, wait=65, timeout=120):
+    """GET with retries: after HTTP 429 (too many requests), a timeout or a dropped connection.
+
+    The wait grows with each attempt. The last error is raised if every attempt fails.
+    """
+    for attempt in range(1, tries + 1):
+        try:
+            response = requests.get(url, params=params, timeout=timeout)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if attempt == tries:
+                raise
+        else:
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response.json()
+            if attempt == tries:
+                response.raise_for_status()
+        time.sleep(wait * attempt)
+
+
+def merge_refresh(path, new, keys=("time", "city")):
+    """Add newly downloaded rows to a stored file; where both have a row, the new one wins."""
+    old = pd.read_parquet(path)
+    both = pd.concat([old, new], ignore_index=True).drop_duplicates(list(keys), keep="last")
+    both.sort_values(list(keys)).reset_index(drop=True).to_parquet(path, index=False)
+    return both
 
 
 def neso_package(package_id):
@@ -115,20 +132,33 @@ def coordinates(locations):
             "longitude": ",".join(locations["longitude"].astype(str))}
 
 
-def download_era5(raw, locations, refresh=False):
-    """Hourly ERA5 reanalysis (actual weather) for each location, one year per request."""
+def download_era5(raw, locations, refresh=False, revised_days=120):
+    """Hourly ERA5 reanalysis (actual weather) for each location, one year per request.
+
+    A refresh only fetches the latest `revised_days`: the most recent ERA5 data is preliminary
+    and is replaced by the final version a few months later, while older data does not change.
+    """
     path = raw / "weather_era5.parquet"
     if path.exists() and not refresh:
         return
-    today = f"{pd.Timestamp.now():%Y-%m-%d}"
+    today = pd.Timestamp.now().normalize()
+    first = pd.Timestamp(f"{FIRST_YEAR}-01-01")
+    if path.exists():
+        first = pd.read_parquet(path, columns=["time"])["time"].max().tz_localize(None).normalize()
+        first -= pd.Timedelta(days=revised_days)
     parts = []
-    for year in range(FIRST_YEAR, pd.Timestamp.now().year + 1):
+    for year in range(first.year, today.year + 1):
+        start, stop = max(first, pd.Timestamp(f"{year}-01-01")), min(today, pd.Timestamp(f"{year}-12-31"))
         payload = get_json(ERA5_ARCHIVE, {
             **coordinates(locations), "hourly": ",".join(VARIABLES), "models": "era5",
-            "start_date": f"{year}-01-01", "end_date": min(f"{year}-12-31", today), "timezone": "GMT"})
+            "start_date": f"{start:%Y-%m-%d}", "end_date": f"{stop:%Y-%m-%d}", "timezone": "GMT"})
         parts.append(to_long(payload, locations["city"]))
         time.sleep(30)
-    pd.concat(parts, ignore_index=True).dropna(subset=VARIABLES, how="all").to_parquet(path, index=False)
+    new = pd.concat(parts, ignore_index=True).dropna(subset=VARIABLES, how="all")
+    if path.exists():
+        merge_refresh(path, new)
+    else:
+        new.to_parquet(path, index=False)
 
 
 def download_forecast_weather(raw, locations, refresh=False):
@@ -136,20 +166,33 @@ def download_forecast_weather(raw, locations, refresh=False):
 
     `_previous_day1` (24 hours before) would leak: for an evening target hour its model run
     starts after the 08:30 UTC origin on the day before.
+
+    A forecast already archived never changes, so a refresh only fetches the days after the
+    latest one stored (plus two days of overlap).
     """
     path = raw / "weather_forecast_day2.parquet"
     if path.exists() and not refresh:
         return
     end = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
+    first = pd.Timestamp(FORECAST_ARCHIVE_START)
+    if path.exists():
+        first = pd.read_parquet(path, columns=["time"])["time"].max().tz_localize(None).normalize()
+        first -= pd.Timedelta(days=2)
+    if first > end:
+        return
     parts = []
-    for start in pd.date_range(FORECAST_ARCHIVE_START, end, freq="QS"):
+    for start in [first, *pd.date_range(first + pd.offsets.QuarterBegin(1, startingMonth=1), end, freq="QS")]:
         stop = min(start + pd.offsets.QuarterEnd(0), end)
         payload = get_json(PREVIOUS_RUNS, {
             **coordinates(locations), "hourly": ",".join(v + FORECAST_SUFFIX for v in VARIABLES),
             "start_date": f"{start:%Y-%m-%d}", "end_date": f"{stop:%Y-%m-%d}", "timezone": "GMT"})
         parts.append(to_long(payload, locations["city"], suffix=FORECAST_SUFFIX))
         time.sleep(20)
-    pd.concat(parts, ignore_index=True).to_parquet(path, index=False)
+    new = pd.concat(parts, ignore_index=True)
+    if path.exists():
+        merge_refresh(path, new)
+    else:
+        new.to_parquet(path, index=False)
 
 
 def fetch_day2_forecast(locations, target_date):
